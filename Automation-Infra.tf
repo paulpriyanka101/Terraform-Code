@@ -156,53 +156,55 @@ resource "aws_s3_bucket_object" "image_upload" {
 	acl = "public-read"
 }
 
-# Create Cloudfront distribution
-resource "aws_cloudfront_distribution" "cf_dist" {
-    origin {
-        domain_name = "static-image-bucket.s3.amazonaws.com"
-        origin_id = "S3-static-image-bucket"
- 
-        custom_origin_config {
-            http_port = 80
-            https_port = 443
-            origin_protocol_policy = "match-viewer"
-            origin_ssl_protocols = ["TLSv1", "TLSv1.1", "TLSv1.2"]
-        }
-    }
-    
-    enabled = true
-    
+# Crate Cloud Front and use the URL to open the complete WebSite:
 
+variable "var1" {default = "S3-"}
+locals {
+    s3_origin_id = "${var.var1}${aws_s3_bucket.image-bucket.bucket}"
+    image_url = "${aws_cloudfront_distribution.s3_distribution.domain_name}/${aws_s3_bucket_object.image-upload.key}"
+}
+
+resource "aws_cloudfront_distribution" "s3_distribution" {
     default_cache_behavior {
-        allowed_methods = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-        cached_methods = ["GET", "HEAD"]
-        target_origin_id = "S3-static-image-bucket"
-
-        # Forward all query strings, cookies and headers
+        allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+        cached_methods   = ["GET", "HEAD"]
+        target_origin_id = local.s3_origin_id
         forwarded_values {
             query_string = false
-
             cookies {
                 forward = "none"
-            }    
+            }
         }
-
         viewer_protocol_policy = "allow-all"
-        min_ttl = 0
-        default_ttl = 3600
-        max_ttl = 86400
     }
-
-    # Restricts who is able to access this content
-    restrictions {
+enabled             = true
+origin {
+        domain_name = aws_s3_bucket.image-bucket.bucket_domain_name
+        origin_id   = local.s3_origin_id
+    }
+restrictions {
         geo_restriction {
-            # type of restriction, blacklist, whitelist or none
-            restriction_type = "none"
+        restriction_type = "none"
         }
     }
-
-    # SSL certificate for the service.
-    viewer_certificate {
+viewer_certificate {
         cloudfront_default_certificate = true
+    }
+
+connection {
+        type    = "ssh"
+        user    = "ec2-user"
+        host    = aws_instance.web.public_ip
+        port    = 22
+        private_key = tls_private_key.webserver_key.private_key_pem
+    }
+
+provisioner "remote-exec" {
+        inline  = [
+            # "sudo su << \"EOF\" \n echo \"<img src='${self.domain_name}'>\" >> /var/www/html/test.html \n \"EOF\""
+            "sudo su << EOF",
+            "echo \"<img src='http://${self.domain_name}/${aws_s3_bucket_object.image_upload.key}'>\" >> /var/www/html/test.html",
+            "EOF"
+        ]
     }
 }
