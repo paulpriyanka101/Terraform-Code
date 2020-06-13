@@ -1,84 +1,159 @@
 provider "aws" {
-		region  = "ap-south-1"
-		profile = "admin"
+  region = "ap-south-1"
+  profile = "admin"
 }
 
-resource "aws_key_pair" "key-name" {
-  key_name   = "hola"
-  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCtq/HITmyH+I+CpXO8raRgN9T3U1u2rKKEKAjSIe5C3pdYyAuhzzseYG4T8Jh63g1GWPdRgc7Z/gcyzaWWG/IutiW9KaXll4NuVoSZH+nkzN7ZE2tFaVYorknzHsa7KHeKtwgDmLIxicF3p8dlzoiXY5PFqVqxUuYMFRjX++zpxb8nJJfpIma1BCSYQBXEFtlqFKLXwYdQmMX9uJyjFHqBs3ZbgWeymyAi1MKvvKrZf9J43CrNOWZ+64W3LrO3dJPcjNH6LxogO5bzFkk6K1bssqVjfA7oZ0fhfdSeLfhOObt/YVd+z7TzsCJMIZ22dBbhrAwJOBb/7YfY7wJ8y6G2tg7GGxe4cTe9EjDkGq0XicQVBWG0jjUAiHiQEfvgXWzmPUTWkkbs6yiUwhYZ3AcAHJRNMt0x7A9oS+Cgj2qSR4uv8sA+kMTSYFdWD8TTu4r0YZFhVxHRf8hdFe8u8eUKtTxTqo/OWODYI/HSwik+J3CI1R9N9bxyhEt+OE1ZgbM= key-name"
+# Create key-pair for EC2:
+
+resource "tls_private_key" "webserver_key" {
+	algorithm = "RSA"
+	rsa_bits = 4096
 }
+resource "local_file" "private_key" {
+	content = tls_private_key.webserver_key.private_key_pem
+	filename = "webserver.pem"
+	file_permission = 0400
+}
+resource "aws_key_pair" "webserver_key" {
+	key_name = "webserver"
+	public_key = tls_private_key.webserver_key.public_key_openssh
+}
+
+# Create SG for ec2 and allow port 22 and 80:
 
 resource "aws_security_group" "websg" {
-  name         = "websg"
-  description  = "My Security Group"
-  
-  # allow ingress of port 22
-  ingress {
-    cidr_blocks = ["0.0.0.0/0"]  
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-  } 
-  
-  # allow ingress of port 80
-  ingress {
-    cidr_blocks = ["0.0.0.0/0"]  
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
+	name = "websg"
+	description = "my webserver sg"
+ingress {
+	description = "ssh"
+	cidr_blocks = ["0.0.0.0/0"]
+	from_port = 22
+	to_port = 22
+	protocol = "tcp"
+  }
+ingress {
+	description = "http"
+	cidr_blocks = ["0.0.0.0/0"]
+	from_port = 80
+	to_port = 80
+	protocol = "tcp"
+  }
+ingress {
+	description = "ping-icmp"
+	from_port = -1
+	to_port = -1
+	protocol = "icmp"
+	cidr_blocks = ["0.0.0.0/0"]
+  }
+egress {
+	from_port = 0
+	to_port = 0
+	protocol = "-1"
+	cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-resource "aws_instance" "myweb" {
-	ami = "ami-052c08d70def0ac62"
-	availability_zone = "ap-south-1a"
-	instance_type = "t2.micro"
-	key_name = "hola"
-	security_groups = [ "websg" ]
+# Launch EC2 instance:
+
+resource "aws_instance" "web" {
+	ami = "ami-0447a12f28fddb066"
+	instance_type = "t2.micro" 
+	key_name = aws_key_pair.webserver_key.key_name
+	security_groups = ["websg"]
+
+	connection {
+		type = "ssh"
+		user = "ec2-user"
+		private_key = tls_private_key.webserver_key.private_key_pem
+		host = aws_instance.web.public_ip
+	}
+
+	provisioner "remote-exec" {
+		inline = [
+    	"sudo yum install httpd php git -y",
+    	"sudo systemctl start httpd",
+    	"sudo systemctl enable httpd"
+		]
+	}
 
 	tags = {
-		name = "webserver-1"
+		name = "Webserver-1"
 	}
 }
 
-#creating and attaching ebs volume
+# Launch EBS volume and attach it to EC2:
 
-resource "aws_ebs_volume" "data-vol" {
- availability_zone = "ap-south-1a"
- size = 1
- tags = {
-        Name = "data-volume"
- }
-
+resource "aws_ebs_volume" "datavol" {
+	availability_zone = aws_instance.web.availability_zone
+	size = 1
+	tags = {
+		name = "web-data" 
+	}
 }
 
-resource "aws_volume_attachment" "vol_att" {
- device_name = "/dev/sdc"
- volume_id = "${aws_ebs_volume.data-vol.id}"
- instance_id = "${aws_instance.myweb.id}"
+resource "aws_volume_attachment" "datavol_attach" {
+	device_name = "/dev/sdc"
+	volume_id = "${aws_ebs_volume.datavol.id}"
+	instance_id = "${aws_instance.web.id}"
+	force_detach = true
 }
 
-resource "aws_ebs_snapshot" "webdata_snapshot" {
-  volume_id = "${aws_ebs_volume.data-vol.id}"
+output "weserver_ip" {
+	value = aws_instance.web.public_ip
+}
 
-  tags = {
-    Name = "WebServer_snap"
+resource "null_resource" "nullremote1" {
+	depends_on = [
+	aws_volume_attachment.datavol_attach
+	]
+
+connection {
+	type = "ssh"
+	user = "ec2-user"
+	private_key = tls_private_key.webserver_key.private_key_pem
+	host = aws_instance.web.public_ip
+} 
+
+provisioner "remote-exec" {
+	inline = [
+		"sudo mkfs.ext4 /dev/xvdc",
+		"sudo mount /dev/xvdc /var/www/html",
+		"sudo rm -rf /var/www/html*",
+		"sudo git clone https://github.com/paulpriyanka101/Terraform-Code.git /var/www/html/"
+	]
   }
 }
 
-resource "aws_s3_bucket" "b" {
-  bucket = "static-image-bucket"
-  acl    = "public-read"
-  
-  tags   = {
-    names = "static-image-bucket"
-  }	 
+resource "null_resource" "nulllocal1" {
+	depends_on = [
+	null_resource.nullremote1,
+	]
+provisioner "local-exec" {
+	command = "open  http://52.66.249.194/php-code.php"
+  }
 }
 
-resource "aws_s3_bucket_object" "upload-file" {
-bucket = "static-image-bucket"
-key = "cloudimage"
-source = "/Users/priyanka/Desktop/Multi-cloud.jpg"
+# Create S3 bucket and store image from gihub:
+
+resource "aws_s3_bucket" "image-bucket" {
+	bucket = "webserver-1-image-bucket"
+	acl = "public-read"
+
+provisioner "local-exec" {
+	command = "git clone https://github.com/paulpriyanka101/Terraform-Code.git /Users/priyanka/Desktop/tera-code/auto-infra/webserver-iamge"
+  }
+
+provisioner "local-exec" {
+        when        =   destroy
+        command     =   "echo Y | rmdir /s /Users/priyanka/Desktop/tera-code/auto-infra/webserver-image"
+    }
+}
+
+resource "aws_s3_bucket_object" "image_upload" {
+	bucket = aws_s3_bucket.image-bucket.bucket
+	key = "Multi-cloud.jpg"
+	source = "/Users/priyanka/Desktop/tera-code/auto-infra/webserver-image/Multi-cloud.jpg"
+	acl = "public-read"
 }
 
 # Create Cloudfront distribution
