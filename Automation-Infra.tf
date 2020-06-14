@@ -124,12 +124,26 @@ provisioner "remote-exec" {
   }
 }
 
+resource "aws_ebs_snapshot" "webdata_snapshot" {
+  volume_id = "${aws_ebs_volume.datavol.id}"
+
+  tags = {
+    Name = "WebServer_snap"
+  }
+}
+
+resource "null_resource" "nullremote2" {
+        depends_on = [
+        null_resource.nullremote1,
+        ]
+}
+
 resource "null_resource" "nulllocal1" {
 	depends_on = [
 	null_resource.nullremote1,
 	]
 provisioner "local-exec" {
-	command = "open  http://52.66.249.194/php-code.php"
+	command = "open  http://${aws_instance.web.public_ip}"
   }
 }
 
