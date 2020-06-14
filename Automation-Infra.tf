@@ -159,7 +159,7 @@ provisioner "local-exec" {
 
 provisioner "local-exec" {
         when        =   destroy
-        command     =   "echo Y | rmdir /s /Users/priyanka/Desktop/tera-code/auto-infra/webserver-image"
+        command     =   "echo Y | rm -rf /s /Users/priyanka/Desktop/tera-code/auto-infra/webserver-image"
     }
 }
 
